@@ -1,85 +1,61 @@
-import logging
-import os
-import random
-import re
-import time
-import hashlib
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, ConversationHandler
 import requests
-from telegram import (
-    Update,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+import hashlib
+import time
+import random
 
-# ================= CONFIG =================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8043793382:AAF3huUaOwSKcY8xLE7Q4A-28HHYOWT4k78")
-ADMIN_IDS = [5893249491]
+# Telegram Bot Token and Admin Chat ID
+TOKEN = '7718773479:AAE9AAdx0W2pWq6guVzF2lM5oySaY-AZyGc'
+ADMIN_CHAT_ID = '6148224523'
 
-# Payment Gateway Config
+# Payment Gateway Configuration
 API_KEY = '46460da2747c4f639d3f3681a42edec8'
 MCH_ID = '100789053'
 PAYMENT_URL = 'https://api.watchglbpay.com/pay/web'
 CALLBACK_URL = 'https://yourdomain.com/callback'
 REDIRECT_URL = 'https://yourdomain.com/success'
 
-# ================ Logging ================
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# ================ Data Storage ============
-user_queries = {}
-user_orders = {}
-registered_users = set()
-
-# ================ Plan Pricing ============
-hack_plans = {
-    "day": {"name": "Day Plan", "amount": 200},
-    "week": {"name": "Weekly Plan", "amount": 700},
-    "month": {"name": "Monthly Plan", "amount": 1500},
-    "premium": {"name": "Premium Plan", "amount": 5000},  # Premium plan for exclusive features
-}
-
-categories = {
-    "🔓 Root Hacks": {
-        "Sharpshooter": "Precision aimbot with adjustable sensitivity. Great for players looking for accuracy without compromise. Join main group @SHARPSHOOTER7872",
-        "Titan": "Wallhack and ESP (Extra Sensory Perception) to see opponents and items through walls. join main group @TITAN7872",
-        "King Root": "Full control over the game environment with root access, ensuring unbeatable advantages. Join main group @KINGMOD7872",
-        "Dead Eye": "Silent aim with auto-targeting, making your shots deadly accurate without detection. Join main group @DEADEYE7872"
+# Hack Categories and Pricing with Descriptions
+HACKS = {
+    "Android Root Hacks": {
+        "Sharpshooter": {"Week": 700, "Month": 1300, "Description": "Sharpshooter is designed for users who want accurate and powerful aiming capabilities in BGMI, allowing precise shots even from a distance. Join main Group @SharpShooter7872"},
+        "Titan": {"Week": 700, "Month": 1300, "Description": "Titan provides players with enhanced features such as speed hacks and teleportation, making it ideal for aggressive gameplay. Join main Group @Titan7872" }
+        
     },
-    "🔒 Non-Root Hacks": {
-        "Illusion": "Undetectable ESP with full visibility of enemies. Perfect for those who need stealth in their gameplay. jOIN MAIN GROUP @ILLUSION7872",
-        "King Mod": "Enhances your movement speed and accuracy, combined with auto-headshot features.Join main group @KINGMOD7872",
-        "Game Nova": "Completely customizable mod pack with recoil control and anti-bullet mechanics. Join main group @KINGNOVA7872",
-        "Vision": "Radar hack and night vision mode for seeing your enemies in total darkness. Join main group @VISION7872"
+    "Android Non-Root Hacks": {
+        "Titan": {"Week": 800, "Month": 1400, "Description": "Titan (Non-root) is a less intrusive hack offering speed boosts and combat advantages without needing to root the device.Join main Group Join main Group @Titan7872"},
+        "Vision": {"Week": 800, "Month": 1400, "Description": "Vision enhances your visibility in the game, allowing you to spot enemies through walls and other obstacles. Join main Group @LithalAndVision"},
+        "Lethal": {"Week": 800, "Month": 1400, "Description": "Lethal offers superior combat features like rapid fire and high accuracy for maximum domination in BGMI. Join main Group @LithalAndVision"}
     },
-    "🍏 iOS Hacks": {
-        "WiniOS": "Specialized aimbot with enhanced targeting features for iOS users, works smoothly on the platform. Join main group @WINIOS7872",
-        "King iOS": "Full ESP and aim assist designed specifically for iOS devices, providing a competitive edge. Join main group @KINGIOS7872",
-        "Shoot 360": "Full ESP and aim assist designed specifically for iOS devices, providing a competitive edge. Join main group @SHOOT3607872"
+    "iOS Hacks": {
+        "WinIOS": {"Week": 900, "Month": 1600, "Description": "WinIOS brings a competitive edge for iOS users, unlocking various cheats to make your gameplay smoother and more powerful. @WinIos7872"},
+        "iOS Zero": {"Week": 900, "Month": 1600, "Description": "iOS Zero offers a unique set of features, including wallhacks and aimbots, to give iOS players an advantage in BGMI. Join main Group @IosZero7872"},
+        "Shoot 360": {"Week": 900, "Month": 1600, "Description": "Shoot 360 offers dynamic 360-degree shooting, allowing for instant reaction to enemies surrounding you."}
     },
-    "🧊 Server Freeze": {
-        "Server Freeze Hack": "Temporarily freezes the server, causing massive lag for enemies, disrupting their gameplay. Join main group @SERVERFREEZE7872"
+    "PC Hacks": {
+        "PC Titan": {"Week": 1000, "Month": 1800, "Description": "PC Titan is a robust hack for PC gamers, providing features like rapid movement and increased damage to outplay your opponents.Join main Group @pc7872"}
+    },
+    "Server Freeze Hack": {
+        "Freeze Server": {"One-Time": 2000, "Description": "Server Freeze allows you to crash game servers, making them temporarily unusable, ideal for causing disruption during competitive matches. Join main Group @ServerFreeze7872"}
     }
 }
 
-# ================ Payment Generation ===========
+# States
+CATEGORY, HACK, VALIDITY = range(3)
+
+# Generate MD5 Signature
 def generate_sign(params, secret_key):
     sorted_params = sorted(params.items())
     sign_str = "&".join(f"{k}={v}" for k, v in sorted_params) + f"&key={secret_key}"
     return hashlib.md5(sign_str.encode()).hexdigest()
 
-def generate_payment_link(custom_name, user_id, amount):
-    order_id = f"ORDER{user_id}{random.randint(1000,9999)}"
+# Generate Payment Link
+def generate_payment(hack_name, amount):
+    order_id = "BGMI" + str(random.randint(10000, 999999))
     order_date = time.strftime('%Y-%m-%d %H:%M:%S')
+
     params = {
         'version': '1.0',
         'mch_id': MCH_ID,
@@ -87,162 +63,136 @@ def generate_payment_link(custom_name, user_id, amount):
         'pay_type': '101',
         'trade_amount': amount,
         'order_date': order_date,
-        'goods_name': custom_name,
+        'goods_name': hack_name,
         'notify_url': CALLBACK_URL,
         'page_url': REDIRECT_URL,
-        'mch_return_msg': str(user_id),
+        'mch_return_msg': hack_name,
     }
+
     sign = generate_sign(params, API_KEY)
     params['sign'] = sign
-    params['sign_type'] = 'MD5'
+    params['sign_type'] = "MD5"
 
     try:
         response = requests.post(PAYMENT_URL, data=params)
-        data = response.json()
-        if data.get("tradeResult") == "1" and "payInfo" in data:
-            return data["payInfo"]
+        response_data = response.json()
+        if response_data.get('tradeResult') == '1' and 'payInfo' in response_data:
+            return response_data['payInfo']
         else:
-            logger.error(f"Payment API Error: {data}")
+            print("Payment Link Generation Failed:", response_data)
             return None
     except Exception as e:
-        logger.error(f"Payment Link Generation Error: {e}")
+        print("Error generating payment link:", e)
         return None
 
-# ================ Start Handler ============
+# Back Function
+async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if 'category' in context.user_data:
+        del context.user_data['category']
+    if 'hack' in context.user_data:
+        del context.user_data['hack']
+    if 'validity' in context.user_data:
+        del context.user_data['validity']
+
+    # Go back to category selection
+    await update.message.reply_text("Going back to the main menu. Select a hack category:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton(category) for category in HACKS.keys()]], one_time_keyboard=True, resize_keyboard=True))
+    return CATEGORY
+
+# Start Command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    registered_users.add(user.id)
-    keyboard = []
-    row = []
-    for i, cat in enumerate(categories.keys(), 1):
-        row.append(KeyboardButton(cat))
-        if i % 2 == 0:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    keyboard.append([KeyboardButton("📩 Contact Us")])
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("👋 Welcome to *Hacks Bot*\n\nSelect a category:", reply_markup=reply_markup, parse_mode='Markdown')
+    keyboard = [[KeyboardButton(category)] for category in HACKS.keys()]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text("Select a hack category:", reply_markup=reply_markup)
+    return CATEGORY
 
-# ================ Message Handler ============
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    user = update.effective_user
+# Update for all steps to include "Back" button
+async def select_hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    category = update.message.text.strip()
+    if category not in HACKS:
+        await update.message.reply_text("Invalid category. Please select again.")
+        return CATEGORY
+    context.user_data['category'] = category
+    keyboard = [[KeyboardButton(hack)] for hack in HACKS[category]] + [[KeyboardButton("🔙 Back")]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text("Select a hack:", reply_markup=reply_markup)
+    return HACK
 
-    # ✅ Auto-detect UTR (12-digit)
-    if re.match(r"^\d{12}$", text):
-        if user_orders.get(user.id):
-            hack, plan, _ = user_orders[user.id][-1]
-            for admin_id in ADMIN_IDS:
-                await context.bot.send_message(
-                    admin_id,
-                    f"✅ Payment UTR Received\n👤 {user.full_name} (ID: {user.id})\n📝 Username: @{user.username}\n🔧 Hack: {hack}\n📆 Plan: {plan}\n🧾 UTR: {text}"
-                )
-            await update.message.reply_text("✅ UTR received. Admin will verify shortly.")
-        else:
-            await update.message.reply_text("❗ No recent order found. Please select a hack and plan first.")
-        return
+async def select_validity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "🔙 Back":
+        return await go_back(update, context)
+    
+    hack = update.message.text.strip()
+    category = context.user_data.get('category')
+    if hack not in HACKS[category]:
+        await update.message.reply_text("Invalid hack. Please select again.")
+        return HACK
+    context.user_data['hack'] = hack
+    description = HACKS[category][hack]["Description"]
+    keyboard = [[KeyboardButton(f"{validity} - ₹{price}")] for validity, price in HACKS[category][hack].items() if validity != "Description"]
+    keyboard.append([KeyboardButton("🔙 Back")])
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text(f"Description: {description}\n\nSelect validity:", reply_markup=reply_markup)
+    return VALIDITY
 
-    # 📩 Contact message
-    if context.user_data.get("awaiting_query"):
-        for admin_id in ADMIN_IDS:
-            sent = await context.bot.send_message(admin_id, f"📩 Query from {user.full_name} (ID: {user.id}) (@{user.username}):\n{text}")
-            user_queries[sent.message_id] = user.id
-        await update.message.reply_text("✅ Your query has been sent to admin.")
-        context.user_data["awaiting_query"] = False
-        return
-
-    # Category selection
-    if text in categories:
-        context.user_data["selected_category"] = text
-        hacks = categories[text]
-        keyboard = []
-        row = []
-        for i, hack in enumerate(hacks.keys(), 1):
-            row.append(KeyboardButton(hack))
-            if i % 2 == 0:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-        keyboard.append([KeyboardButton("⬅ Back")])
-        await update.message.reply_text(f"🔍 {text}\nSelect a hack:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-
-    # Hack selected
-    elif text in [hack for sublist in categories.values() for hack in sublist.keys()]:
-        context.user_data["selected_hack"] = text
-        hack_description = ""
-        for category in categories.values():
-            if text in category:
-                hack_description = category[text]
-                break
-        keyboard = [
-            [KeyboardButton("🗓 Week Plan")],
-            [KeyboardButton("📆 Month Plan")],
-            [KeyboardButton("💎 Premium Plan")],
-            [KeyboardButton("⬅ Back")]
-        ]
-        await update.message.reply_text(
-            f"🎯 *{text}*\n\nDescription: {hack_description}\n\nChoose a plan:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode='Markdown'
+async def process_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "🔙 Back":
+        return await go_back(update, context)
+    
+    validity = update.message.text.strip()
+    hack = context.user_data['hack']
+    category = context.user_data['category']
+    
+    for period, amount in HACKS[category][hack].items():
+        if period in validity:
+            selected_amount = amount
+            break
+    else:
+        await update.message.reply_text("Invalid validity. Please select again.")
+        return VALIDITY
+    
+    payment_link = generate_payment(hack, selected_amount)
+    
+    if payment_link:
+        keyboard = [[InlineKeyboardButton("💳 Pay Now", url=payment_link)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        message = (
+            f"*You've selected {hack} ({validity}).*\n"
+            f"*💰 Total: ₹{selected_amount}*\n\n"
+            "*Click below to complete your payment.*"
         )
-
-    # Plan selection
-    elif text.lower() in ["📅 day plan", "🗓 week plan", "📆 month plan", "💎 premium plan"]:
-        hack_name = context.user_data.get("selected_hack")
-        plan_map = {"📅 day plan": "day", "🗓 week plan": "week", "📆 month plan": "month", "💎 premium plan": "premium"}
-        plan_key = plan_map.get(text.lower())
-        plan = hack_plans.get(plan_key)
-        payment_url = generate_payment_link(f"{hack_name} - {plan['name']}", user.id, plan["amount"])
-        if payment_url:
-            pay_btn = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Pay Now", url=payment_url)]])
-            await update.message.reply_text(
-                f"✅ *Hack:* {hack_name}\n📆 *Plan:* {plan['name']}\n💰 ₹{plan['amount']}\n\n📤 After payment, send your *screenshot or UTR* here.",
-                reply_markup=pay_btn, parse_mode='Markdown')
-            user_orders.setdefault(user.id, []).append((hack_name, plan['name'], "Pending"))
-        else:
-            await update.message.reply_text("❌ Payment link failed. Try again later.")
-
-    elif text == "⬅ Back":
-        await start(update, context)
-
-    elif "contact" in text.lower():
-        context.user_data["awaiting_query"] = True
-        await update.message.reply_text("📨 Please type your message. Admin will reply soon.")
-
+        await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.message.reply_text("To explore more, enter /start")
+        admin_message = (
+            f"🚨 *New Purchase Request* 🚨\n\n"
+            f"👤 *User:* `{update.message.from_user.username or 'Unknown'}` (ID: `{update.message.from_user.id}`)\n"
+            f"🎮 *Hack:* `{hack}`\n"
+            f"📅 *Validity:* `{validity}`\n"
+            f"💰 *Amount:* ₹{selected_amount}\n"
+            f"🔗 *Payment Link:* {payment_link}"
+        )
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_message, parse_mode="Markdown")
     else:
-        await update.message.reply_text("❗ Invalid option. Use /start to begin again.")
+        await update.message.reply_text("Payment link generation failed. Please try again later.")
 
-# ================ Screenshot Handler ============
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user_orders.get(user.id):
-        hack, plan, _ = user_orders[user.id][-1]
-        caption = f"📸 Payment Screenshot\n👤 {user.full_name} (ID: {user.id}) (@{user.username})\n🔧 Hack: {hack}\n📆 Plan: {plan}"
-        for admin_id in ADMIN_IDS:
-            await context.bot.send_photo(chat_id=admin_id, photo=update.message.photo[-1].file_id, caption=caption)
-        await update.message.reply_text("✅ Screenshot received. Admin will verify and activate soon.")
-    else:
-        await update.message.reply_text("❗ No recent order found. Please select a hack and plan first.")
+    return ConversationHandler.END
 
-# ================ Admin Reply Handler ============
-async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.reply_to_message:
-        msg_id = update.message.reply_to_message.message_id
-        if msg_id in user_queries:
-            target = user_queries[msg_id]
-            await context.bot.send_message(target, f"📬 Admin Reply:\n{update.message.text}")
-
-# ================ Main ================
+# Main Function
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, admin_reply))
+    app = Application.builder().token(TOKEN).build()
+    conversation_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_hack)],
+            HACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_validity)],
+            VALIDITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_payment)]
+        },
+        fallbacks=[],
+    )
+    app.add_handler(conversation_handler)
     app.run_polling()
+
+if __name__ == '__main__':
+    main()
 
 if __name__ == "__main__":
     main()
